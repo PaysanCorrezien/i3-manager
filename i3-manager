@@ -1,0 +1,159 @@
+#!/bin/bash
+# --------------------------------------------------------------
+# Script Name: i3-manager
+# Description: A script to manage i3 with rofi GUI
+# Version: 0.3
+# License: MIT License
+# --------------------------------------------------------------
+rofi_theme="$HOME/Documents/Projets/workspacemgr/i3wm.rasi"
+
+declare -A personal_apps=(
+    ["kitty"]="1"
+    ["/home/dylan/share/applications/Obsidian.AppImage"]="3"
+    ["discord"]="6"
+    ["keepassxc"]="7"
+    ["brave-browser"]="5"
+    # ["firefox"]="4"
+    ["nextcloud"]="8"
+    ["thunderbird"]="9"
+)
+
+declare -A professional_apps=(
+    ["teams"]="9"
+    ["remmina"]="2"
+    ["linphone"]="8"
+    ["/opt/forticlient/gui/FortiClient-linux-x64/FortiClient"]="10"
+)
+declare -A app_sleep_time=( ["teams"]="5" ["Obsidian"]="3" )
+
+start_apps() {
+  local -n app_list="$1"
+  default_delay="1"
+  for app in "${!app_list[@]}"; do
+    if [[ "$app" == /* ]]; then
+      app_executable="$app"
+    else
+      app_executable=$(which "$app" 2>/dev/null)
+    fi
+
+    if [ -z "$app_executable" ] && [[ "$app" == *.AppImage ]]; then
+      app_executable="$app"
+    fi
+
+    if [ -n "$app_executable" ]; then
+      workspace_number=${app_list[$app]}
+      if [ -n "$workspace_number" ]; then
+        echo "Starting $app on workspace $workspace_number"
+        i3-msg "workspace $workspace_number; exec $app_executable"
+        app_class=$(basename "$app_executable" | sed 's/.AppImage$//' | tr '[:upper:]' '[:lower:]')
+        
+        app_delay=${app_sleep_time["$app"]:-$default_delay}
+        start_time=$SECONDS
+        end_time=$((start_time + app_delay))
+
+        while true; do
+          if [ "$(xdotool search --onlyvisible --class "$app_class")" != "" ]; then
+            echo "$app started"
+          fi
+          current_time=$SECONDS
+          if [[ $current_time -ge $end_time ]]; then
+            break
+          fi
+          echo "Waiting for $app to start"
+          sleep 0.1
+        done
+        
+      else
+        echo "Workspace number not found for $app"
+      fi
+    else
+      echo "App $app not found"
+    fi
+  done
+}
+
+
+list_move_apps() {
+    workspaces=$(i3-msg -t get_workspaces | jq -r '.[] | .name')
+    chosen_workspace=$(echo "$workspaces" | rofi -dmenu -p "Choose a workspace" -theme $rofi_theme )
+    if [ $? -eq 1 ]; then
+        exit
+    fi
+    windows=$(i3-msg -t get_tree | jq -r '.. | (.nodes? // empty)[] | select(.type=="workspace" and .name=="'"$chosen_workspace"'") | .. | select(.window_properties?) | .window_properties.class')
+
+    if [ "$(echo "$windows" | wc -l)" -gt 1 ]; then
+        chosen_window=$(echo "$windows" | rofi -dmenu -p "Choose a window" -theme $rofi_theme)
+    else
+        chosen_window="$windows"
+    fi
+
+    window_instances=$(i3-msg -t get_tree | jq -r '.. | (.nodes? // empty)[] | select(.type=="workspace" and .name=="'"$chosen_workspace"'") | .. | select(.window_properties? and .window_properties.class=="'"$chosen_window"'") | "\(.id) \(.name) (\(.rect.x),\(.rect.y) \(.rect.width)x\(.rect.height))"')
+
+    if [ "$(echo "$window_instances" | wc -l)" -gt 1 ]; then
+        chosen_instance=$(echo "$window_instances" | rofi -dmenu -p "Choose an instance" -theme $rofi_theme | cut -d' ' -f1)
+    if [ $? -eq 1 ]; then
+        exit
+    fi
+    else
+        chosen_instance=$(echo "$window_instances" | cut -d' ' -f1)
+    fi
+
+    destination_workspace=$(seq 1 10 | rofi -dmenu -p "Choose a destination workspace" -theme $rofi_theme )
+    if [ $? -eq 1 ]; then
+        exit
+    fi
+    i3-msg "[con_id=\"$chosen_instance\"] move container to workspace $destination_workspace"
+}
+
+launch_app() {
+    desktop_files=$(grep -rl '^\[Desktop Entry\]$' /usr/share/applications/ /var/lib/snapd/desktop/applications/ | sort)
+    app_names=$(echo "$desktop_files" | xargs -I {} awk -F '=' '/^Name=/{print $2}' {})
+    appimages=$(find "$HOME" -type f -name "*.AppImage" -printf "%f\n" 2>/dev/null | sed 's/\.AppImage$//')
+    combined_list=$(echo -e "$app_names\n$appimages" | sort | uniq)
+
+    app_name=$(echo "$combined_list" | rofi -dmenu -i -theme "$rofi_theme") # Add the -i flag for case-insensitive matching
+    if [ $? -eq 1 ]; then
+        exit
+    fi
+
+    workspace=$(rofi -dmenu -p "Enter workspace name" -theme "$rofi_theme")
+    if [ $? -eq 1 ]; then
+        exit
+    fi
+    app_file=$(grep -rl "Name=$app_name" "$HOME"/.local/share/applications/ /usr/share/applications/ /var/lib/snapd/desktop/applications/ | head -n 1)
+
+    if [[ -n "$app_file" ]]; then
+        exec_line=$(grep -m 1 '^Exec=' "$app_file" | cut -d '=' -f 2- | sed 's/%[fFuU]//g')
+        i3-msg "workspace $workspace; exec $exec_line"
+    else
+        app_path=$(find "$HOME" -type f -name "$app_name.AppImage" -print -quit)
+        i3-msg "workspace $workspace; exec $app_path"
+    fi
+}
+
+display_menu() {
+options=("Personal" "Professional" "Launch app" "List and move apps")
+choice=$(printf '%s\n' "${options[@]}" | rofi -dmenu -p "Select an option" -theme "$rofi_theme" )
+    if [ $? -eq 1 ]; then
+            exit
+        fi
+
+    case $choice in
+        "Personal")
+            start_apps personal_apps
+            ;;
+        "Professional")
+            start_apps professional_apps
+            ;;
+        "Launch app")
+            launch_app
+            ;;
+        "List and move apps")
+            list_move_apps
+            ;;
+    esac
+}
+
+#
+display_menu
+
